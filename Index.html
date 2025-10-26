@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Client-side Video → MP3/MP4 Converter (Ad-free)</title>
+  <style>
+    :root{
+      --bg:#fff6fb; --card:#ffffff; --accent:#ff6fa3; --muted:#6b7280;
+    }
+    body{
+      font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+      background: linear-gradient(180deg,#fff 0%,var(--bg) 100%);
+      padding: 28px; display:flex; align-items:center; justify-content:center; min-height:100vh;
+    }
+    .card{width:100%; max-width:760px; background:var(--card); border-radius:14px; box-shadow:0 8px 30px rgba(10,10,10,0.06); padding:26px;}
+    h1{margin:0 0 8px; font-size:20px;}
+    p.lead{margin:0 0 18px; color:var(--muted);}
+    .row{display:flex; gap:12px; flex-wrap:wrap; align-items:center;}
+    .file-drop{border:2px dashed #F3E7EF; padding:18px; border-radius:10px; flex:1; min-height:110px; display:flex; align-items:center; justify-content:center; text-align:center; color:var(--muted)}
+    input[type=file]{display:none;}
+    .controls{display:flex; gap:10px; align-items:center;}
+    select, button{padding:10px 14px; border-radius:8px; border:1px solid #eee; background:white;}
+    button.primary{background:linear-gradient(90deg,var(--accent),#ff9ac9); color:white; border: none;}
+    progress{width:100%; height:12px; appearance:none;}
+    .log{font-family:monospace; font-size:13px; color:#374151; margin-top:12px; white-space:pre-wrap;}
+    footer{margin-top:18px; color:var(--muted); font-size:13px; text-align:center;}
+  </style>
+</head>
+<body>
+  <div class="card" role="main">
+    <h1>Ad-free Client-side Video → MP3/MP4 Converter</h1>
+    <p class="lead">Upload a video you own and convert it entirely in your browser — no server, no ads, no external scraping.</p>
+
+    <div class="row" style="margin-bottom:12px;">
+      <label class="file-drop" id="dropzone">
+        <div>
+          <strong id="file-label">Choose or drop a file</strong><br>
+          <small id="file-info">Supported: common video formats (mp4, webm, mov, mkv)</small>
+        </div>
+        <input id="file-input" type="file" accept="video/*,audio/*">
+      </label>
+
+      <div style="min-width:200px;">
+        <div style="margin-bottom:8px;">Output format</div>
+        <div class="controls">
+          <select id="format">
+            <option value="mp3">MP3 (audio only)</option>
+            <option value="mp4">MP4 (video)</option>
+            <option value="webm">WEBM (video)</option>
+          </select>
+          <button id="start-btn" class="primary">Convert</button>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <div style="flex:1;">
+          <progress id="progress" value="0" max="100" style="width:100%"></progress>
+        </div>
+        <div id="pct" style="width:56px; text-align:right; color:var(--muted);">0%</div>
+      </div>
+      <div class="log" id="log"></div>
+      <div style="margin-top:12px;">
+        <a id="download-link" style="display:none; padding:10px 14px; border-radius:8px; text-decoration:none; border:1px solid #eee; background:#f8fafc;">Download result</a>
+      </div>
+    </div>
+
+    <footer>
+      Built with <strong>ffmpeg.wasm</strong>. Host this file as static site (Vercel / Netlify / GitHub Pages). Use only with files you own or have rights to.
+    </footer>
+  </div>
+
+  <!-- ffmpeg.wasm from unpkg -->
+  <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.9/dist/ffmpeg.min.js"></script>
+
+  <script>
+    const { createFFmpeg, fetchFile } = FFmpeg;
+    const ffmpeg = createFFmpeg({ log: true, corePath: 'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js' });
+    const fileInput = document.getElementById('file-input');
+    const dropzone = document.getElementById('dropzone');
+    const fileLabel = document.getElementById('file-label');
+    const fileInfo = document.getElementById('file-info');
+    const startBtn = document.getElementById('start-btn');
+    const formatSelect = document.getElementById('format');
+    const progress = document.getElementById('progress');
+    const pct = document.getElementById('pct');
+    const logEl = document.getElementById('log');
+    const downloadLink = document.getElementById('download-link');
+
+    let selectedFile = null;
+    let isFFmpegLoaded = false;
+
+    // drag/drop
+    ['dragenter','dragover'].forEach(e => {
+      dropzone.addEventListener(e, ev => { ev.preventDefault(); dropzone.style.borderColor = '#ffd1e6'; });
+    });
+    ['dragleave','drop'].forEach(e => {
+      dropzone.addEventListener(e, ev => { ev.preventDefault(); dropzone.style.borderColor = '#F3E7EF'; });
+    });
+    dropzone.addEventListener('drop', ev => {
+      const f = ev.dataTransfer.files[0];
+      handleFile(f);
+    });
+    dropzone.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', () => handleFile(fileInput.files[0]));
+
+    function handleFile(f){
+      if(!f) return;
+      selectedFile = f;
+      fileLabel.textContent = f.name;
+      fileInfo.textContent = `${(f.size/1024/1024).toFixed(2)} MB • ${f.type || 'unknown'}`;
+      log('Selected file: ' + f.name);
+      downloadLink.style.display = 'none';
+    }
+
+    function log(...args){
+      logEl.textContent += args.join(' ') + '\\n';
+      logEl.scrollTop = logEl.scrollHeight;
+      console.log(...args);
+    }
+
+    async function ensureFFmpeg(){
+      if(isFFmpegLoaded) return;
+      log('Loading ffmpeg (this can take a few seconds)...');
+      startBtn.disabled = true;
+      await ffmpeg.load();
+      isFFmpegLoaded = true;
+      startBtn.disabled = false;
+      log('ffmpeg loaded.');
+      // attach progress
+      ffmpeg.setProgress(({ ratio }) => {
+        const percent = Math.min(100, Math.round(ratio * 100));
+        progress.value = percent;
+        pct.textContent = percent + '%';
+      });
+      ffmpeg.setLogger(({ type, message }) => {
+        if(type === 'fferr' || type === 'ffout') {
+          // brief output to log (limit length)
+          log(message.length>400 ? message.slice(0,400)+'...' : message);
+        }
+      });
+    }
+
+    startBtn.addEventListener('click', async () => {
+      if(!selectedFile){
+        alert('Please choose a file first (drag-drop or click).');
+        return;
+      }
+      const outFormat = formatSelect.value;
+      await ensureFFmpeg();
+
+      startBtn.disabled = true;
+      log('Starting conversion to ' + outFormat + ' ...');
+
+      try {
+        const inputName = 'input' + (selectedFile.name.match(/\\.[^/.]+$/)?.[0] || '');
+        const outputName = 'output.' + outFormat;
+
+        // write file
+        ffmpeg.FS('writeFile', inputName, await fetchFile(selectedFile));
+        log('File written to ffmpeg FS: ' + inputName);
+
+        // build ffmpeg args
+        let args = [];
+        if(outFormat === 'mp3'){
+          // extract audio, set 192k bitrate
+          args = ['-i', inputName, '-vn', '-b:a', '192k', outputName];
+        } else if(outFormat === 'mp4'){
+          // re-encode to H.264 baseline (fast)
+          args = ['-i', inputName, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-c:a', 'aac', '-b:a', '128k', outputName];
+        } else if(outFormat === 'webm'){
+          args = ['-i', inputName, '-c:v', 'libvpx', '-crf', '30', '-b:v', '0', '-c:a', 'libopus', outputName];
+        } else {
+          throw new Error('Unsupported format: ' + outFormat);
+        }
+
+        log('Running ffmpeg with args: ' + args.join(' '));
+        await ffmpeg.run(...args);
+        log('ffmpeg finished.');
+
+        // read result
+        const data = ffmpeg.FS('readFile', outputName);
+        const blob = new Blob([data.buffer], { type: outFormat === 'mp3' ? 'audio/mpeg' : (outFormat === 'webm' ? 'video/webm' : 'video/mp4') });
+        const url = URL.createObjectURL(blob);
+
+        downloadLink.href = url;
+        downloadLink.download = selectedFile.name.replace(/\\.[^/.]+$/, '') + '.' + outFormat;
+        downloadLink.textContent = 'Download ' + downloadLink.download;
+        downloadLink.style.display = 'inline-block';
+        log('Result ready — click "Download" or save link.');
+      } catch (err) {
+        console.error(err);
+        log('Error: ' + (err.message || err));
+        alert('Conversion failed: ' + (err.message || err));
+      } finally {
+        startBtn.disabled = false;
+        progress.value = 0;
+        pct.textContent = '0%';
+      }
+    });
+  </script>
+</body>
+</html>
